@@ -15,12 +15,14 @@ func (*moduleLoader) LoadModule(name string) (*gojq.Query, error) {
 		return gojq.Parse(`
 			module { name: "module1", test: 42 };
 			import "module2" as foo;
-			def f: foo::f;
+			def g: foo::f;
 		`)
 	case "module2":
 		return gojq.Parse(`
 			def f: .foo;
 		`)
+	case "module3":
+		return gojq.Parse("")
 	}
 	return nil, fmt.Errorf("module not found: %q", name)
 }
@@ -28,7 +30,7 @@ func (*moduleLoader) LoadModule(name string) (*gojq.Query, error) {
 func ExampleWithModuleLoader() {
 	query, err := gojq.Parse(`
 		import "module1" as m;
-		m::f
+		m::g
 	`)
 	if err != nil {
 		log.Fatalln(err)
@@ -40,7 +42,7 @@ func ExampleWithModuleLoader() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	input := map[string]interface{}{"foo": 42}
+	input := map[string]any{"foo": 42}
 	iter := code.Run(input)
 	for {
 		v, ok := iter.Next()

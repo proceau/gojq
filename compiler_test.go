@@ -2,6 +2,7 @@ package gojq_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -23,12 +24,12 @@ func ExampleCompile() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	iter := code.Run([]interface{}{
+	iter := code.Run([]any{
 		nil,
 		"string",
 		42,
-		[]interface{}{"foo"},
-		map[string]interface{}{"foo": 42},
+		[]any{"foo"},
+		map[string]any{"foo": 42},
 	})
 	for {
 		v, ok := iter.Next()
@@ -59,7 +60,7 @@ func ExampleCode_Run() {
 	if err != nil {
 		log.Fatalln(err)
 	}
-	input := map[string]interface{}{"foo": 42}
+	input := map[string]any{"foo": 42}
 	iter := code.Run(input)
 	for {
 		v, ok := iter.Next()
@@ -105,7 +106,7 @@ func ExampleCode_RunWithContext() {
 }
 
 func TestCodeCompile_OptimizeConstants(t *testing.T) {
-	query, err := gojq.Parse(`[1,{foo:2,"bar":3},[4]]`)
+	query, err := gojq.Parse(`[1,{foo:2,"bar":+3},[-4]]`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +114,8 @@ func TestCodeCompile_OptimizeConstants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, expected := reflect.ValueOf(code).Elem().FieldByName("codes").Len(), 3; expected != got {
+	codes := reflect.ValueOf(code).Elem().FieldByName("codes")
+	if got, expected := codes.Len(), 3; expected != got {
 		t.Errorf("expected: %v, got: %v", expected, got)
 	}
 	iter := code.Run(nil)
@@ -122,8 +124,64 @@ func TestCodeCompile_OptimizeConstants(t *testing.T) {
 		if !ok {
 			break
 		}
-		if expected := []interface{}{
-			1, map[string]interface{}{"foo": 2, "bar": 3}, []interface{}{4},
+		if expected := []any{
+			1, map[string]any{"foo": 2, "bar": 3}, []any{-4},
+		}; !reflect.DeepEqual(got, expected) {
+			t.Errorf("expected: %v, got: %v", expected, got)
+		}
+	}
+}
+
+func TestCodeCompile_OptimizeIndexSlice(t *testing.T) {
+	query, err := gojq.Parse(`.foo."bar".["baz"].[-1]."".[0:1]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := gojq.Compile(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes := reflect.ValueOf(code).Elem().FieldByName("codes")
+	if got, expected := codes.Len(), 8; expected != got {
+		t.Errorf("expected: %v, got: %v", expected, got)
+	}
+	iter := code.Run(nil)
+	for {
+		got, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if got != nil {
+			t.Errorf("expected: %v, got: %v", nil, got)
+		}
+	}
+}
+
+func TestCodeCompile_OptimizeIndexSliceAssign(t *testing.T) {
+	query, err := gojq.Parse(`.foo."bar".["baz"].[0]."".[0:1] = [0]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, err := gojq.Compile(query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codes := reflect.ValueOf(code).Elem().FieldByName("codes")
+	if got, expected := codes.Len(), 8; expected != got {
+		t.Errorf("expected: %v, got: %v", expected, got)
+	}
+	iter := code.Run(nil)
+	for {
+		got, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if expected := map[string]any{
+			"foo": map[string]any{
+				"bar": map[string]any{
+					"baz": []any{map[string]any{"": []any{0}}},
+				},
+			},
 		}; !reflect.DeepEqual(got, expected) {
 			t.Errorf("expected: %v, got: %v", expected, got)
 		}
@@ -167,7 +225,9 @@ func TestCodeCompile_OptimizeTailRec_While(t *testing.T) {
 }
 
 func TestCodeCompile_OptimizeTailRec_CallRec(t *testing.T) {
-	query, err := gojq.Parse("def f: . as $x | $x, (if $x < 3 then $x + 1 | f else empty end), $x; f")
+	query, err := gojq.Parse(`
+		def f: . as $x | $x, (if $x < 3 then $x + 1 | f else empty end), $x; f
+	`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +261,7 @@ func TestCodeCompile_OptimizeJumps(t *testing.T) {
 		t.Errorf("expected: %v, got: %v", expected, got)
 	}
 	v := codes.Index(1).Elem().FieldByName("v")
-	if got, expected := *(*interface{})(unsafe.Pointer(v.UnsafeAddr())), 13; expected != got {
+	if got, expected := *(*any)(unsafe.Pointer(v.UnsafeAddr())), 13; expected != got {
 		t.Errorf("expected: %v, got: %v", expected, got)
 	}
 	iter := code.Run(nil)
@@ -213,6 +273,36 @@ func TestCodeCompile_OptimizeJumps(t *testing.T) {
 		if expected := 1; !reflect.DeepEqual(got, expected) {
 			t.Errorf("expected: %v, got: %v", expected, got)
 		}
+	}
+}
+
+func TestParseErrorTokenOffset(t *testing.T) {
+	testCases := []struct {
+		src    string
+		offset int
+	}{
+		{src: "^", offset: 1},
+		{src: " ^", offset: 2},
+		{src: " ^ ", offset: 2},
+		{src: "👍", offset: 4},
+		{src: " 👍", offset: 5},
+		{src: " 👍 ", offset: 5},
+		{src: "test👍", offset: 8},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.src, func(t *testing.T) {
+			_, err := gojq.Parse(tc.src)
+			if err == nil {
+				t.Fatal("expected: error")
+			}
+			var pe *gojq.ParseError
+			if !errors.As(err, &pe) {
+				t.Fatalf("expected: *gojq.ParseError, got %v", err)
+			}
+			if pe.Offset != tc.offset {
+				t.Fatalf("expected: %v, got %v", tc.offset, pe.Offset)
+			}
+		})
 	}
 }
 
@@ -255,7 +345,7 @@ func BenchmarkCompile(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	query, err := gojq.Parse(string(cnt))
+	query, err := gojq.Parse(string(cnt) + ".")
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-func parseFlags(args []string, opts interface{}) ([]string, error) {
+func parseFlags(args []string, opts any) ([]string, error) {
 	rest := make([]string, 0, len(args))
 	val := reflect.ValueOf(opts).Elem()
 	typ := val.Type()
@@ -60,24 +60,22 @@ func parseFlags(args []string, opts interface{}) ([]string, error) {
 					return nil, fmt.Errorf("unknown flag `%s'", arg)
 				}
 			}
-		} else if arg > "-" && arg[0] == '-' {
-			if val, ok = shortToValue[arg[1:]]; !ok {
-				var skip bool
-				for i := 1; i < len(arg); i++ {
-					opt := arg[i : i+1]
-					if val, ok = shortToValue[opt]; ok {
-						if val.Kind() != reflect.Bool {
-							break
-						}
-					} else if !("A" <= opt && opt <= "Z" || "a" <= opt && opt <= "z") {
-						skip = true
+		} else if len(arg) > 1 && arg[0] == '-' {
+			var skip bool
+			for i := 1; i < len(arg); i++ {
+				opt := arg[i : i+1]
+				if val, ok = shortToValue[opt]; ok {
+					if val.Kind() != reflect.Bool {
 						break
 					}
+				} else if !("A" <= opt && opt <= "Z" || "a" <= opt && opt <= "z") {
+					skip = true
+					break
 				}
-				if !skip {
-					shortopts = arg[1:]
-					goto L
-				}
+			}
+			if !skip && (len(arg) > 2 || !ok) {
+				shortopts = arg[1:]
+				goto L
 			}
 		}
 		if !ok {
@@ -143,7 +141,11 @@ func parseFlags(args []string, opts interface{}) ([]string, error) {
 				return nil, fmt.Errorf("unknown flag `%s'", opt)
 			}
 			if val.Kind() != reflect.Bool && len(shortopts) > 1 {
-				args[i] = shortopts[1:]
+				if shortopts[1] == '=' {
+					args[i] = shortopts[2:]
+				} else {
+					args[i] = shortopts[1:]
+				}
 				i--
 				shortopts = ""
 			} else {
@@ -156,7 +158,7 @@ func parseFlags(args []string, opts interface{}) ([]string, error) {
 	return rest, nil
 }
 
-func formatFlags(opts interface{}) string {
+func formatFlags(opts any) string {
 	val := reflect.ValueOf(opts).Elem()
 	typ := val.Type()
 	var sb strings.Builder

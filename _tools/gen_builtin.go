@@ -37,20 +37,18 @@ func run(input, output string) error {
 	if err != nil {
 		return err
 	}
-	qs := make(map[string][]*gojq.FuncDef)
 	q, err := gojq.Parse(string(cnt))
 	if err != nil {
 		return err
 	}
+	fds := make(map[string][]*gojq.FuncDef)
 	for _, fd := range q.FuncDefs {
-		name := fd.Name
-		if name[0] == '_' {
-			name = name[1:]
-		}
 		fd.Minify()
-		qs[name] = append(qs[fd.Name], fd)
+		fds[fd.Name] = append(fds[fd.Name], fd)
 	}
-	t, err := astgen.Build(qs)
+	fds["_assign"] = nil
+	fds["_modify"] = nil
+	t, err := astgen.Build(fds)
 	if err != nil {
 		return err
 	}
